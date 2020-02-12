@@ -1,0 +1,215 @@
+---
+title: "Homework 4 - Regression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Dataset and Objective
+
+```{r message=FALSE, warning=FALSE}
+set.seed(315)
+loanstats <-  read.csv(file = "LoanStats_securev1_2019Q4.csv", 
+                       stringsAsFactors = FALSE, header=TRUE, skip = 1)
+
+# Turn percent into number
+loanstats$int_rate <- gsub('%', '', loanstats$int_rate)
+loanstats$int_rate <- as.numeric(loanstats$int_rate)
+
+# Turn percent into number
+loanstats$revol_util <- gsub('%', '', loanstats$revol_util)
+loanstats$revol_util <- as.numeric(loanstats$revol_util)
+
+factor_columns <- c(
+  "home_ownership", 
+  "pymnt_plan", 
+  "purpose", 
+  "title", 
+  "grade", 
+  "term", 
+  "sub_grade"
+  )
+
+loanstats[factor_columns] <- lapply(loanstats[factor_columns], factor)
+```
+
+
+
+```{r}
+summary(loanstats$int_rate)
+```
+
+My hypothesis is that the borrower's debt-to-income ratio has a strong correlation with the interest rate on the loan since it reflects a borrower's overall financial health. I think that as this ratio becomes larger, it means that it could be riskier to offer a loan to the borrower and that investors may want a higher premium for lending in the form of a higher interest rate.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+
+loanstats <- loanstats %>% drop_na("dti", "int_rate")
+
+cor(loanstats$dti, loanstats$int_rate)
+```
+
+Another possible factor could be the amount of credit the borrower has used relative to the total amount of credit the borrower has.
+
+```{r message=FALSE, warning=FALSE}
+loanstats <- loanstats %>% drop_na("revol_util")
+
+cor(loanstats$revol_util, loanstats$int_rate)
+```
+
+Since `revol_util` has a stronger correlation with the loan interest rate than `dti`, I will try building a simple model with `revol_util` as the only variable. My goal is to solve for 
+
+$$a = \overline{y} - b\overline{x}$$
+where $x$ is `revol_util` and $y$ is `int_rate`.
+
+```{r message=FALSE, warning=FALSE}
+library(caret)
+
+trainIndex <- createDataPartition(loanstats$int_rate, p = 0.75, list=FALSE)
+trainData <- loanstats[trainIndex,]
+testData <- loanstats[-trainIndex,]
+
+control <- trainControl(method="repeatedcv", number=3, repeats = 3, search = "grid")
+
+fit.LR <- train(int_rate ~ revol_util, data=trainData, method="lm", 
+                metric="RMSE",  preProc=c("center", "scale"), 
+                trControl=control, tuneLength = 10)
+
+summary(fit.LR)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(fit.LR, testData)
+
+rmse <- RMSE(predictions, testData$int_rate)
+rmse
+
+error.rate = rmse / mean(testData$int_rate)
+error.rate
+
+R2(predictions, testData$int_rate)
+```
+
+
+The value for R-squared is pretty close to 0. Ideally, this value is as close to 1 as possible. We therefore need to look for a model that achieves a value as close to 1 as possible, perhaps by finding one or multiple features that have a higher correlation with `int_rate`.
+
+
+```{r message=FALSE, warning=FALSE}
+library(Hmisc)
+library(corrplot)
+
+# Search for better fit
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+features <- c(
+  "annual_inc",
+  "inq_last_6mths",
+  "delinq_2yrs",
+  "acc_open_past_24mths",
+  "total_rev_hi_lim",
+  "avg_cur_bal",
+  "total_rev_hi_lim",
+  "int_rate"
+)
+featureMatrix <- as.matrix(loanstats[features])
+correlationR <- rcorr(featureMatrix)
+
+correlationMatrix <- correlationR$r
+pmat <- correlationR$P
+
+corsig<-corrplot(correlationMatrix, method = "color", col = col(200),  
+   type = "upper", order = "hclust", 
+   addCoef.col = "black",
+   tl.col = "darkblue", tl.srt = 45,
+   p.mat = pmat, sig.level = 0.05, insig = "blank", 
+   diag = FALSE,
+   title = "Correlation Between Loan Application Attributes",
+   mar=c(0,0,1,0)
+)
+```
+
+Interest rate seems to have the highest correlation with the number of accounts opened in the last 24 months, but it's about as strong as the debt-to-income ratio feature explored earlier which did not yield a high R-squared value.
+
+```{r message=FALSE, warning=FALSE}
+# Continue looking for numerical features
+
+features <- c(
+  "acc_open_past_24mths",
+  "fico_range_low",
+  "fico_range_high",
+  "bc_util",
+  "open_rv_24m",
+  "total_acc",
+  "il_util",
+  "int_rate"
+)
+featureMatrix <- as.matrix(loanstats[features] )
+correlationR <- rcorr(featureMatrix)
+
+correlationMatrix <- correlationR$r
+pmat <- correlationR$P
+
+corsig<-corrplot(correlationMatrix, method = "color", col = col(200),  
+   type = "upper", order = "hclust", 
+   addCoef.col = "black",
+   tl.col = "darkblue", tl.srt = 45,
+   p.mat = pmat, sig.level = 0.05, insig = "blank", 
+   diag = FALSE,
+   title = "Correlation Between Loan Application Attributes",
+   mar=c(0,0,1,0)
+)
+```
+
+So far, none of the correlations between numerical features and interest rate look strong. Another idea is to look at nominal features to determine if adding a dummy variable to the model will help increase its accuracy:
+
+````{r message=FALSE, warning=FALSE}
+# Try nominal features
+
+loanstats$grade_numeric <- as.numeric(loanstats$grade)
+loanstats$subgrade_numeric <- as.numeric(loanstats$sub_grade)
+loanstats$purpose_numeric <- as.numeric(loanstats$purpose)
+loanstats$title_numeric <- as.numeric(loanstats$title)
+
+features <- c(
+  "grade_numeric",
+  "subgrade_numeric",
+  "purpose_numeric",
+  "title_numeric",
+  "int_rate"
+)
+
+featureMatrix <- as.matrix(loanstats[features] )
+correlationR <- rcorr(featureMatrix)
+
+correlationMatrix <- correlationR$r
+pmat <- correlationR$P
+
+corsig<-corrplot(correlationMatrix, method = "color", col = col(200),  
+   type = "upper", order = "hclust", 
+   addCoef.col = "black",
+   tl.col = "darkblue", tl.srt = 45,
+   p.mat = pmat, sig.level = 0.05, insig = "blank", 
+   diag = FALSE,
+   title = "Correlation Between Loan Application Attributes",
+   mar=c(0,0,1,0)
+)
+```
+
+```{r message=FALSE, warning=FALSE}
+trainData <- loanstats[trainIndex,]
+testData <- loanstats[-trainIndex,]
+
+fit.LR <- train(int_rate ~ subgrade_numeric + revol_util, data=trainData, method="lm", metric="RMSE",  preProc=c("center", "scale"), trControl=control, tuneLength = 10)
+
+summary(fit.LR)
+```
+
+R-squared is a lot closer to 1 now that I have added the sub_grade feature!
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(fit.LR, testData)
+
+R2(predictions, testData$int_rate)
+```

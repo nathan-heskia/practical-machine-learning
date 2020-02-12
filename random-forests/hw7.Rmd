@@ -1,0 +1,111 @@
+---
+title: "Homework 7 - Ensemble Random Forest"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Dataset and Objective
+
+The dataset consists of [Phishing Websites](https://www.kaggle.com/akashkr/phishing-website-dataset) from Kaggle. It uses 30 different features to determine whether or not a given website is a phishing website. A phishing website is a website which tries to steal information from users under the guise of looking and behaving like a legitimate website.
+
+```{r message=FALSE, warning=FALSE}
+library(caret)
+set.seed(408)
+
+phishing <- read.csv('phishing-dataset.csv')
+
+# Row id not needed
+phishing <- phishing[,-1]
+
+# Factorize remaning columns
+phishing[,] <- lapply(phishing[,], factor)
+summary(phishing$Result)
+```
+
+There are 4,898 instances of phishing websites and 6,157 legitimate websites My objective is to build a classifier that can use the 30 features given to determine the website class as phishing or legitimate.
+
+### Explanation of features
+
+```{r message=FALSE, warning=FALSE}
+
+data.frame(t(phishing[1,]))
+
+```
+
+The model has 30 features, below is a description of some and how they relate to whether or not the URL should be classified as a phishing site. For each feature, a value of 1 indicates legitimate, 0 indicates suspicious and -1 indicates phishing.
+
+__URL_Length__ - Between 54 and 75 is consideredsuspicious. Greater than 75 is classified as phishing.
+
+__Shortening_Service__ - Was a shortening service used to conceal the true length of the URL?
+
+__SSLfinal_State___ - If https is used, is the certificate issuer trusted? If not it's suspicious. If https is not used, it's considered phishing.
+
+__Favicon__ - Was the favicon loaded from a different domain?
+
+__URL_of_Anchor__ - Do more than 67% of of the `<a>` not contain any links? If so, it's classified as phishing. If greater than 37% but less than 67% of the `<a>` tags do not contain links, then it's considered suspicious.
+
+__SFH__ - Is form data submitted to an external domain or is no action taken upon submission?
+
+__Submitting_to_email__ - Are form submissions emailed?
+
+__on_mouseover__ - Is JavaScript used to change the status bar in the browser?
+
+__web_traffic__ - Does the website have a rank greater than 100,000 in the Alex database? The latter database ranks the popularity of a website by the number of visitors in addition to the number of websites they visit.
+
+__Google_Index__ - Has the site been indexed by Google?
+
+__Statistical_report__ Does the IP belong to a known list of phishing IPs?
+
+### Training the Random Forest
+
+```{r message=FALSE, warning=FALSE, eval=FALSE}
+trainIndex <- createDataPartition(phishing$Result, p = 0.75, list=FALSE)
+trainData <- phishing[trainIndex,]
+trainTest <- phishing[-trainIndex,]
+trControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+
+rfModel <- train(Result ~ ., data = trainData, method = "rf", metric = "Kappa", trControl = trControl, tuneGrid = data.frame(mtry = c(1, 2, 4, 8, 16)))
+```
+
+```{r message=FALSE, warning=FALSE}
+rfModel
+
+confusionMatrix(rfModel)
+
+plot(rfModel)
+```
+
+The model with the highest accuracy and kappa is one which selected from 16 candidate features at each split.
+
+### Classifying the test data
+
+```{r}
+predictions <- predict(rfModel, newdata=trainTest[,-ncol(trainTest)])
+
+confusionMatrix(predictions, trainTest$Result)
+
+```
+
+```{r}
+library(ggplot2)
+
+rfVarImp <- varImp(rfModel, scale = TRUE)
+
+rfVarImp <- data.frame(rownames(rfVarImp$importance), rfVarImp$importance$Overall)
+
+names(rfVarImp) <- c('Website', 'Importance')
+
+rfVarImp <- transform(rfVarImp, Website = reorder(Website, Importance))
+
+ggplot(data=rfVarImp, aes(x=Website, y=Importance)) + 
+  geom_bar(stat = 'identity',colour = "blue", fill = "blue") + 
+  coord_flip()
+
+```
+
+The features which are the highest predictors in classifying a phishing website, according to this model, are whether or not the website uses SSL/TLS and has a trusted certificate, the percentage of anchor tags (`<a>`) on the page which contain links and the number of visitors to the website.

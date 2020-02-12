@@ -1,0 +1,156 @@
+---
+title: "Homework 3 - Classification Trees Or Rules"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Dataset and Objective
+
+The [Zoo Dataset](http://archive.ics.uci.edu/ml/datasets/Zoo) from the UCI Machine Learning Repository contains classifications for animal types based on attributes such as whether or not the animal is a predator, has a tail, etc. There is one numeric attribute for each animal's number of legs ranging from 0-8. My objective is to build a classifier using all of these features (except for animal name).
+
+
+```{r message=FALSE, warning=FALSE}
+set.seed(321)
+zoo <- read.csv(file = 'zoo.data', stringsAsFactors = FALSE, header=FALSE)
+
+colnames(zoo) <- c('name',
+  'hair',
+  'feathers',
+  'eggs',
+  'milk',
+  'airborne',
+  'aquatic',
+  'predator',
+  'toothed',
+  'backbone',
+  'breathes',
+  'venomous',
+  'fins',
+  'legs',
+  'tail',
+  'domestic',
+  'catsize',
+  'type') 
+
+zoo[-c(1, 18)] <- lapply(zoo[-c(1, 18)], factor)
+
+class_names <- c(
+  'mammal', 'bird', 'reptile', 'fish', 'amphibian', 'bug', 'invertebrate')
+
+# Map class names to human readable names
+zoo$type <- class_names[zoo$type]
+
+# Every column besides name can be a factor
+zoo[-c(1)] <- lapply(zoo[-c(1)], factor)
+
+summary(zoo)
+```
+
+### Create training and test datasets
+```{r message=FALSE, warning=FALSE}
+library(caret)
+
+trainIndex <- createDataPartition(zoo$type, p=0.75, list = FALSE)
+
+# Every column is a feature except for `name`
+trainData <- zoo[trainIndex,-c(1)]
+
+testData <- zoo[-trainIndex, -c(1)]
+
+summary(trainData$type)
+```
+
+I will use the 1R algorithm to begin with a simple model that finds a feature to split the dataset with the most accuracy.
+
+### 1R Algorithm
+```{r message=FALSE, warning=FALSE}
+library(RWeka)
+oneRModel <- OneR(type ~ ., data = trainData)
+
+oneRModel
+
+predictions <- predict(oneRModel, testData)
+oneRPredictMatrix <- confusionMatrix(predictions, testData$type)
+oneRPredictMatrix
+```
+
+The 1R algorithm uses the number of legs in each instance to determine the animal class. We can see that all instances of amphibian will be incorrectly classified as mammals since each amphibian has 4 legs:
+
+```{r}
+condition <- which(zoo$type=='amphibian')
+zoo[condition, c('name', 'legs', 'type')]
+```
+
+
+Additionally, not all mammals in the dataset have 4 legs, so they will be classified as birds when they have 2 legs and as fish when they have 0 legs:
+
+
+```{r message=FALSE, warning=FALSE}
+condition <- which(zoo$type=='mammal' & !(zoo$legs == '4'))
+zoo[condition, c('name', 'legs', 'type')]
+```
+
+In order to increase the accuracy of the classifier, a more complex set of rules needs to be created.
+
+### C5 Decision Tree Algorithm
+
+```{r message=FALSE, warning=FALSE}
+control <- trainControl(method = 'cv', number = 10)
+
+tune <- expand.grid(.model =c('tree'), .trials=c(1,5,10,20), 
+                    .winnow = c(TRUE,FALSE))
+
+c5Model <- train(type ~ ., data = trainData, method = 'C5.0', 
+                 trControl = control, tuneGrid = tune)
+
+summary(c5Model)
+predictions <- predict(c5Model, testData)
+c5PredictMatrix <- confusionMatrix(predictions, testData$type)
+c5PredictMatrix
+```
+
+Using a decision tree has increased both kappa and accuracy. The following is the result of a more robust rule-set using the RIPPER algorithm: 
+
+### Ripper Algorithm
+```{r message=FALSE, warning=FALSE}
+
+control <- trainControl(method = 'repeatedcv', number = 10,  
+                        repeats = 10)
+
+ripperModel <- train(type ~ ., data = trainData, 
+                      method = 'JRip', trControl = control)
+
+ripperModel$bestTune
+
+predictions <- predict(ripperModel, testData)
+ripperPredictMatrix <- confusionMatrix(predictions, testData$type)
+ripperModel$finalModel
+ripperPredictMatrix
+```
+
+
+### Analysis
+
+The following is a comparison of all algorithms used:
+
+```{r message=FALSE, warning=FALSE}
+
+stats <- rbind(
+  data.frame(t(as.numeric(oneRPredictMatrix$overall))),
+  data.frame(t(as.numeric(c5PredictMatrix$overall))),
+  data.frame(t(as.numeric(ripperPredictMatrix$overall)))
+)
+
+colnames(stats) <- names(oneRPredictMatrix$overall)
+stats$model <- c('OneR', 'C5.0', 'RIPPER')
+
+stats[,c("model", "Accuracy", "Kappa")]
+```
+
+The RIPPER model has the highest accuracy and kappa on the test set.

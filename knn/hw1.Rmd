@@ -1,0 +1,279 @@
+---
+title: "K Nearest Neighbor Implementation"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+### Objective
+
+My objective is to use the K Nearest Neighbor algorithm with a dataset on outstanding loans to classify/predict the risk level (called __grade__ in the dataset) of a loan based on an applicant's financial history.
+
+The [dataset](https://resources.lendingclub.com/secure/LoanStats_securev1_2019Q3.csv.zip) is provided by Lending Club. Lending Club uses a [proprietary](https://www.lendingclub.com/foliofn/rateDetail.action) algorithm to determine a grade of A (least risk) to G (most risk). My hypothesis is that factors such as annual income, FICO score, number of derogatory remarks on credit history, number of credit inquiries, etc. all contribute to how a loan grade is determined. By using K Nearest Neighbor, I think that I can determine applicants' loan grades by comparing them with each other and then using the most frequent grade for applicants with a similar (_closest_ in distance) financial background.
+
+### Data Preparation
+
+```{r}
+set.seed(724)
+loanstats <- read.csv(file = "LoanStats_securev1_2019Q3.csv", skip = 1, stringsAsFactors = FALSE)
+# Only look at individual applications
+loanstats = loanstats[loanstats$application_type == "Individual",]
+dim(loanstats)
+```
+
+The dataset has __123,238__ rows and __150__ columns. How many of them contain numeric data?
+
+```{r}
+# Create a vector with the names of columns
+# where the value is TRUE if column is numeric,false otherwise
+numerical_columns <- unlist(lapply(loanstats, is.numeric))
+# The grade column is not numeric, but it will be my label so I'd like to keep it
+numerical_columns[["grade"]] = TRUE
+
+loanstats_numeric = loanstats[ , numerical_columns]
+head(loanstats_numeric)
+```
+
+We now have a dataframe consisiting of 111 numeric columns, with the exception of the grade column. As an initial attempt to solving the problem, I will use a subset of the numerical columns that are mostly non-empty as the training set for KNN and try to predict the label __grade__.
+
+### Normalizing and selecting the column data
+First, the dataframe is normalized using \[ \frac{x - min(x)}{\ max(x) - minx(x)} \]
+
+```{r}
+# Lantz, p. 79
+normalize <- function(x) {
+  return ((x - min(x, na.rm=TRUE)) / (max(x, na.rm=TRUE) - min(x, na.rm=TRUE)))
+}
+
+loanstats_normalized <- data.frame(loanstats_numeric)
+loanstats_normalized[,!(colnames(loanstats_normalized) %in% c("grade"))] <- 
+  lapply(loanstats_normalized[,!(colnames(loanstats_normalized) %in% c("grade"))], normalize)
+```
+
+After some inspection of the dataset, I narrowed down the number of columns to just those that have enough non-null values. These columns include annual income, fico score range, credit limits, debt-to-income ratio, number of accounts open in the past _n_ months, and so on.
+
+```{r}
+selected_columns <- c(
+  "acc_open_past_24mths",
+  "annual_inc",
+  "avg_cur_bal",
+  "bc_open_to_buy",
+  "bc_util",
+  "delinq_2yrs",
+  "delinq_amnt",
+  "dti",
+  "fico_range_high",
+  "fico_range_low",
+  "grade",
+  "il_util",
+  "inq_fi",
+  "inq_last_12m",
+  "inq_last_6mths",
+  "last_fico_range_high",
+  "last_fico_range_low",
+  "loan_amnt",
+  "max_bal_bc",
+  "mo_sin_old_il_acct",
+  "mo_sin_old_rev_tl_op",
+  "mo_sin_rcnt_rev_tl_op",
+  "mo_sin_rcnt_tl",
+  "mort_acc",
+  "mths_since_rcnt_il",
+  "mths_since_recent_bc",
+  "mths_since_recent_inq",
+  "num_accts_ever_120_pd",
+  "num_actv_rev_tl",
+  "num_bc_sats",
+  "num_bc_tl",
+  "num_il_tl",
+  "num_op_rev_tl",
+  "num_rev_accts",
+  "num_rev_tl_bal_gt_0",
+  "num_tl_90g_dpd_24m",
+  "num_tl_op_past_12m",
+  "num_sats",
+  "open_acc",
+  "open_acc_6m",
+  "open_act_il",
+  "open_il_12m",
+  "open_il_24m",
+  "open_rv_12m",
+  "open_rv_24m",
+  "out_prncp",
+  "out_prncp_inv",
+  "pct_tl_nvr_dlq",
+  "percent_bc_gt_75",
+  "pub_rec_bankruptcies",
+  "pub_rec",
+  "tot_coll_amt",
+  "tot_hi_cred_lim"
+)
+loanstats_subset <- loanstats_normalized[selected_columns]
+
+loanstats_subset <- na.omit(loanstats_subset)  # Remove any NA rows within the subset
+
+dim(loanstats_subset)
+
+```
+
+This narrows down the number of rows to __94,878__ and __53__ columns. Now, we'll train on 75% of the data:
+
+### Creating the training data and running the algorithm (1st attempt)
+
+```{r}
+training_percent = 0.75
+num_training_rows = floor(nrow(loanstats_subset) * training_percent)
+
+# Choose num_traing_rows samples to get the row numbers for the rows in the training set
+row_numbers <- sample(nrow(loanstats_subset), num_training_rows)
+
+train_set <- loanstats_subset[row_numbers,]
+test_set <- loanstats_subset[-row_numbers,]  # All numbers not in the training row numbers
+
+# Extract the grade column from the training/test sets to get the labels
+train_set_labels <- train_set[, c("grade")]
+test_set_labels <- test_set[, c("grade")]
+
+# Extract all other columns to get the training features
+train_set_columns <- train_set[,!(colnames(train_set) %in% c("grade"))]
+test_set_columns <- test_set[,!(colnames(test_set) %in% c("grade"))]
+```
+
+For my first attempt, I use the __class__ packages knn function.
+
+```{r}
+library(class)
+library(gmodels)
+
+pred <- knn(
+  train = train_set_columns, test = test_set_columns, cl = train_set_labels, k = 5)
+  
+CrossTable(x = test_set_labels, y = pred, prop.chisq=FALSE)
+```
+
+The accuracy of this model is $$\frac{\# Correct\ A + \# Correct \ B + \# Correct \ C + \# \ Correct \ D}{\#\  Test\  Labels} = \frac{3969 + 2375 + 1731 + 782}{23720} = 37.33\% $$ 
+
+The accuracy of this model is not good. I tried different values of _k_ as well as splitting the data more evenly by the loan grade label. In all cases, the accuracy stayed between __32%__ and __38%__.
+
+### Interpretation
+
+My initial thinking was based around alot of guess-work, assumptions and cleaning up/normalizing numerical data. The size of the dataset makes it difficult to analyze visually just by looking at the columns. What I think the KNN algorithm needs to work is a dataset which can be divided or segmented in a way such that new observations can be labeled according to the most freqent label of the nearest _k_ observations.
+
+Applying this idea to my dataset, I started to think of how the numerical features might segment the data into the different grade labels I want to classify. For example, what does the column _num_sats_ (the number of satisfactory accounts the applicant has) help with? If I group by the grade label and take the average of this column, I should be able to see some difference that I could use in my classification:
+
+```{r}
+mean_num_sats <- aggregate(num_sats ~ grade, loanstats, mean)
+mean_num_sats
+```
+
+It looks like this value is close to 12 for every grade of loan, meaning that if an applicant has 12 satisfory accounts, their _distance_ to any other applicant in the KNN model will be about the same, which means an applicant with any grade of loan is just as likely to be a nearest neighbor.
+
+This made me realize that the columns selected should have a wider range of values, on average, for each of the loan grades. That way, the distances computed for each feature would be more helpful in choosing an applicant with similar loan grades and provide a more accurate classification. For example, the ratio of credit/debit card use to credit limit is pretty distinct among different loan grades:
+
+```{r}
+mean_bc_util <- aggregate(bc_util ~ grade, loanstats, mean)
+mean_bc_util
+```
+
+Using this insight, I attempt to choose a subset of columns that segment the loan grades much more meaningfully.
+
+### Creating the training data and running the algorithm (2nd attempt)
+
+```{r}
+# These columns were classified as strings because of their `%` signs
+numerical_columns[["int_rate"]] = TRUE
+numerical_columns[["revol_util"]] = TRUE
+
+loanstats_numeric = loanstats[ , numerical_columns]
+loanstats_numeric$int_rate <- gsub('%', '', loanstats_numeric$int_rate)
+loanstats_numeric$revol_util <- gsub('%', '', loanstats_numeric$revol_util)
+loanstats_numeric[, c("int_rate","revol_util")] <- 
+  sapply(loanstats_numeric[, c("int_rate","revol_util")], as.numeric)
+
+loanstats_normalized <- data.frame(loanstats_numeric)
+loanstats_normalized[,!(colnames(loanstats_normalized) %in% c("grade"))] <- 
+  lapply(loanstats_normalized[,!(colnames(loanstats_normalized) %in% c("grade"))], normalize)
+
+select_columns = c(
+  "all_util",
+  "annual_inc",
+  "avg_cur_bal",
+  "bc_open_to_buy",
+  "bc_util",
+  "dti",
+  "fico_range_high",
+  "fico_range_low",
+  "grade",
+  "inq_last_12m",
+  "int_rate",
+  "last_fico_range_high",
+  "last_fico_range_low",
+  "max_bal_bc",
+  "mo_sin_old_rev_tl_op",
+  "mths_since_last_delinq",
+  "mths_since_last_major_derog",
+  "mths_since_rcnt_il",
+  "mths_since_recent_bc",
+  "mths_since_recent_bc_dlq",
+  "pct_tl_nvr_dlq",
+  "percent_bc_gt_75",
+  "revol_bal",
+  "revol_util",
+  "total_bal_il",
+  "total_bc_limit"
+)
+
+loanstats_subset <- loanstats_normalized[select_columns]
+
+loanstats_subset <- na.omit(loanstats_subset)
+
+dim(loanstats_subset)
+```
+
+This reduces the dataframe to __13,699__ rows and __26__ columns. Now, we'll again train on 75% of the data:
+
+```{r}
+training_percent = 0.75
+num_training_rows = floor(nrow(loanstats_subset) * training_percent)
+
+# Choose num_traing_rows samples to get the row numbers for the rows in the training set
+row_numbers <- sample(nrow(loanstats_subset), num_training_rows)
+
+train_set <- loanstats_subset[row_numbers,]
+test_set <- loanstats_subset[-row_numbers,]  # All numbers not in the training row numbers
+
+# Extract the grade column from the training/test sets to get the labels
+train_set_labels <- train_set[, c("grade")]
+test_set_labels <- test_set[, c("grade")]
+
+# Extract all other columns to get the training features
+train_set_columns <- train_set[,!(colnames(train_set) %in% c("grade"))]
+test_set_columns <- test_set[,!(colnames(test_set) %in% c("grade"))]
+```
+
+For this training, I set $k=3$
+```{r}
+pred <- knn(
+  train = train_set_columns, test = test_set_columns, cl = train_set_labels, k = 3)
+  
+CrossTable(x = test_set_labels, y = pred, prop.chisq=FALSE)
+```
+
+The accuracy of this model is $$\frac{752 + 812 + 777 + 481}{3425} = 82.39\% $$ 
+
+The accuracy of this model has increased by over 100%! This happened by cutting the number of columns in half using the idea that there should be more variance between the loan grade levels and the values for each column. As a final step, I increase the value of _k_ to 5 to check if it improves accuracy:
+
+```{r}
+pred <- knn(
+  train = train_set_columns, test = test_set_columns, cl = train_set_labels, k = 5)
+  
+CrossTable(x = test_set_labels, y = pred, prop.chisq=FALSE)
+```
+
+The accuracy when setting $k=5$ is $$\frac{761 + 848 + 815 + 488}{3425} = 85.02\% $$ 
+
+### Final analysis
+
+My idea to choose the columns used for training by inspecting the average value for each column grouped by loan grade helped improve the algorithm's accuracy significantly. While tuning the value of _k_ helped improve accuracy, choosing the columns used to train the algorithm made the most difference. In a dataset with over __100,000__ rows and __150__ columns, I've learned that it's important when using the KNN algorithm to not introduce noise by including columns that don't help segment the data.
+
+

@@ -1,0 +1,359 @@
+---
+title: "Homework 5 - Neural Network and SVM"
+author: Nathan Heskia
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Dataset and Objective
+
+The dataset consists of images of hand gestures of the [American Sign Language](https://www.kaggle.com/datamunge/sign-language-mnist).
+
+```{r warning=FALSE, message=FALSE}
+library(caret)
+library(imager)
+library(magick)
+library(neuralnet)
+library(dplyr)
+set.seed(311)
+
+signTrain <- read.csv('sign_mnist_train.csv', header = TRUE, stringsAsFactors = FALSE)
+signTest <- read.csv('sign_mnist_test.csv', header = TRUE, stringsAsFactors = FALSE)
+signTrain$label <- as.factor(signTrain$label)
+signTest$label <- as.factor(signTest$label)
+
+```
+
+Each label 0-25 maps to alphabetic letter A-Z. There is no mapping for J and Z. The rest of the columns in each row represent a pixel in a 28 by 28 grayscale image ranging from 0 (black) to 255 (white). Here are some example images from the training set:
+
+```{r warning = FALSE, message = FALSE}
+par(mfrow=c(3,3))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[1,2:785]))))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[3,2:785]))))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[2000,2:785]))))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[3000,2:785]))))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[4000,2:785]))))
+plot(magick::image_read(as.cimg(as.numeric(signTrain[5000,2:785]))))
+```
+
+
+```{r warning = FALSE, message = FALSE}
+signTrain[3,]$label
+```
+
+The label for middle image in the top row is `2`, meaning this is the gesture for the letter `C`. My objective is to train a classifier that can recognize which letter is represented by the hand gesture in each image and output the corresponding label.
+
+### Preparing the training data
+
+There are over 27,000 rows in the training set. Because of the amount of time this will cause in training the network, I will sample a fixed size of images for each label in the training set and grow the size of the training set based on the results of performance at each step.
+
+```{r warning = FALSE, message = FALSE}
+
+# Scale the data between 0 and 1
+signTrain[,2:785] <- signTrain[,2:785] / 255
+signTest[,2:785] <- signTest[,2:785] / 255
+
+# Take 150 samples for each letter of the alphabet
+signTrainSample <- sample_n(signTrain[which(signTrain$label == '0'),], 150)
+
+for(r in c(1:26)) { # J and Z are skipped
+  signTrainSample <- rbind(signTrainSample, sample_n(signTrain[which(signTrain$label == as.character(r)),], 150))
+}
+
+dim(signTrainSample)
+
+```
+
+```{r echo = FALSE}
+nnHidden1 <- readRDS("./nnhidden1.rds")
+nnHidden5 <- readRDS("./nnhidden5.rds")
+nnHidden10 <- readRDS("./nnhidden10.rds")
+```
+
+### Training a Neural Network
+
+I use the `nnet` method from the `caret` package and tune the number of nodes in the hidden layer to 1, 5 and 10.
+
+```{r, warning = FALSE, message = FALSE, eval = FALSE}
+nnHidden1 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = "cv", number = 5),
+            method = "nnet", tuneGrid = expand.grid(.size = c(1), .decay = 5e-4), 
+            preProc = c("center", "scale"), linout = 0, trace = FALSE)
+
+
+nnHidden5 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = "cv", number = 5),
+             method = "nnet", tuneGrid = expand.grid(.size = c(5), .decay = 5e-4),
+             preProc = c("center", "scale"), linout = 0, MaxNWts = 4100, trace = FALSE)
+
+nnHidden10 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = "cv", number = 5),
+             method = "nnet", tuneGrid = expand.grid(.size = c(10), .decay = 5e-4),
+             preProc = c("center", "scale"), linout = 0, MaxNWts = 8200, trace = FALSE)
+```
+
+As the number of nodes in the hidden layer increases, so does the training accuracy and kappa. Let's apply these models to the testing set, which contains 7172 instances.
+
+```{r}
+hidden1Predict <- predict(nnHidden1, signTest[,-1])
+hidden5Predict <- predict(nnHidden5, signTest[,-1])
+hidden10Predict <- predict(nnHidden10, signTest[,-1])
+
+hidden1PredictConfMat <- confusionMatrix(hidden1Predict, signTest$label)
+hidden5PredictConfMat <- confusionMatrix(hidden5Predict, signTest$label)
+hidden10PredictConfMat <- confusionMatrix(hidden10Predict, signTest$label)
+
+hidden1PredictResults <- as.numeric(hidden1PredictConfMat$overall)[1:2]
+hidden5PredictResults <- as.numeric(hidden5PredictConfMat$overall)[1:2]
+hidden10PredictResults <- as.numeric(hidden10PredictConfMat$overall)[1:2]
+
+resultCombined <- c(
+  as.numeric(nnHidden1$results[,-c(1,2)]),
+  hidden1PredictResults,
+  as.numeric(nnHidden5$results[,-c(1,2)]),
+  hidden5PredictResults,
+  as.numeric(nnHidden10$results[,-c(1,2)]),
+  hidden10PredictResults
+)
+
+nnResult <- matrix(resultCombined, ncol=6, byrow=TRUE)
+colnames(nnResult) <- c("Train Accuracy","Train Kappa","Train Accuracy SD", "Train Kappa SD", "Test Accuracy", "Test Kappa")
+rownames(nnResult) <- c("1","5","10")
+nnResult <- as.table(nnResult)
+nnResult
+```
+
+Since our training accuracy is much higher than our test accuracy as the number of nodes increases, this means that our model has __low bias__ and __high variance__. In other words, the training process is overfitting the data.
+
+One possible solution to this problem is to increase the size of the training set and run the results for a hidden layer of size 10 to see if accuracy improves.
+
+```{r warning = FALSE, message = FALSE}
+# Take 250 samples for each letter of the alphabet
+signTrainSample <- sample_n(signTrain[which(signTrain$label == '0'),], 250)
+
+for(r in c(1:26)) {
+  signTrainSample <- rbind(signTrainSample, sample_n(signTrain[which(signTrain$label == as.character(r)),],250))
+}
+
+dim(signTrainSample)
+
+```
+
+```{r echo = FALSE}
+nnHidden10 <- readRDS("./nnhidden10Resampled.rds")
+```
+
+
+```{r eval = FALSE}
+nnHidden10 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = "cv", number = 5), 
+                    method = "nnet", tuneGrid = expand.grid(.size = c(10), .decay = 5e-4), 
+                    preProc = c("center", "scale"), linout = 0, MaxNWts = 8200, trace = TRUE)
+
+```
+
+```{r}
+hidden10Results <- as.numeric(nnHidden10$results[,-c(1,2)])
+hidden10Predict <- predict(nnHidden10, signTest[,-1])
+hidden10PredictConfMat <- confusionMatrix(hidden10Predict, signTest$label)
+hidden10PredictResults <- as.numeric(hidden10PredictConfMat$overall)[1:2]
+
+nnResult <- matrix(c(hidden10Results, hidden10PredictResults), ncol=6, byrow=TRUE)
+colnames(nnResult) <- c("Train Accuracy","Train Kappa","Train Accuracy SD", "Train Kappa SD", "Test Accuracy","Test Kappa")
+rownames(nnResult) <- c("10")
+nnResult <- as.table(nnResult)
+nnResult
+```
+
+The training accuracy is still much higher than our test accuracy even when increasing the training set size, but the performance of the model on the test data still did improve, which suggests that the training process improves with a larger size of training data as well as nodes. However, the previous example with 10 hidden layers and 6000 training examples took about half an hour to run on a machine with 16 GB of RAM and a processor with 3.20 GHz frequency and 4 cores. This suggests that layers with even more nodes and training data will take a long time to process. 
+
+One library method which offers a faster training time is  `mlpML`, which also enables the network to contain 3 hidden layers of varying size. In the following case, I keep the size of the 3 hidden layers constant and compare the performance of each with a training set containing 400 samples of each letter.
+
+```{r echo = FALSE}
+nnML15 <- readRDS("./nn15.rds")
+nnML18 <- readRDS("./nn18.rds")
+nnML20 <- readRDS("./nn20.rds")
+nnML30 <- readRDS("./nn30.rds")
+nnML40 <- readRDS("./nn40.rds")
+nnML54 <- readRDS("./nn54.rds")
+```
+
+```{r warning = FALSE, message = FALSE}
+# Take 400 samples for each letter of the alphabet
+signTrainSample <- sample_n(signTrain[which(signTrain$label == '0'),], 400)
+
+for(r in c(1:26)) {
+  signTrainSample <- rbind(signTrainSample, sample_n(signTrain[which(signTrain$label == as.character(r)),], 400))
+}
+
+dim(signTrainSample)
+
+```
+
+```{r warning = FALSE, message = FALSE, eval = FALSE}
+nnML15 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 15, .layer2 = 15, .layer3 = 15),
+                preProc = c('center', 'scale'))
+
+nnML18 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 18, .layer2 = 18, .layer3 = 18),
+                preProc = c('center', 'scale'))
+
+nnML20 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 20, .layer2 = 20, .layer3 = 20),
+                preProc = c('center', 'scale'))
+
+nnML30 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 30, .layer2 = 30, .layer3 = 30),
+                preProc = c('center', 'scale'))
+
+nnML40 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 40, .layer2 = 40, .layer3 = 40),
+                preProc = c('center', 'scale'))
+
+nnML54 <- train(label ~ ., data = signTrainSample, trControl= trainControl(method = 'cv', number = 5),
+                method = 'mlpML', tuneGrid = expand.grid(.layer1 = 54, .layer2 = 54, .layer3 = 54),
+                preProc = c('center', 'scale'))
+```
+
+The previous code created 6 different models, each containing 3 hidden layers with a fixed size of 15, 18, 20, 30, 40 and 54 respectively.
+
+```{r}
+nnML15Predict <- predict(nnML15, signTest[,-1])
+nnML18Predict <- predict(nnML18, signTest[,-1])
+nnML20Predict <- predict(nnML20, signTest[,-1])
+nnML30Predict <- predict(nnML30, signTest[,-1])
+nnML40Predict <- predict(nnML40, signTest[,-1])
+nnML54Predict <- predict(nnML54, signTest[,-1])
+
+nnML15PredictConfMat <- confusionMatrix(nnML15Predict, signTest$label)
+nnML18PredictConfMat <- confusionMatrix(nnML18Predict, signTest$label)
+nnML20PredictConfMat <- confusionMatrix(nnML20Predict, signTest$label)
+nnML30PredictConfMat <- confusionMatrix(nnML30Predict, signTest$label)
+nnML40PredictConfMat <- confusionMatrix(nnML40Predict, signTest$label)
+nnML54PredictConfMat <- confusionMatrix(nnML54Predict, signTest$label)
+
+
+nnML15PredictResults <- as.numeric(nnML15PredictConfMat$overall)[1:2]
+nnML18PredictResults <- as.numeric(nnML18PredictConfMat$overall)[1:2]
+nnML20PredictResults <- as.numeric(nnML20PredictConfMat$overall)[1:2]
+nnML30PredictResults <- as.numeric(nnML30PredictConfMat$overall)[1:2]
+nnML40PredictResults <- as.numeric(nnML40PredictConfMat$overall)[1:2]
+nnML54PredictResults <- as.numeric(nnML54PredictConfMat$overall)[1:2]
+
+resultCombined <- c(
+  as.numeric(nnML15$results),
+  nnML15PredictResults,
+  as.numeric(nnML18$results),
+  nnML18PredictResults,
+  as.numeric(nnML20$results),
+  nnML20PredictResults,
+  as.numeric(nnML30$results),
+  nnML30PredictResults,
+  as.numeric(nnML40$results),
+  nnML40PredictResults,
+  as.numeric(nnML54$results),
+  nnML54PredictResults
+)
+
+testMLResult <- matrix(resultCombined, ncol=9, byrow=TRUE)
+colnames(testMLResult) <- c(names(nnML15$results), "Test Accuracy", "Test Kappa")
+rownames(testMLResult) <- c("15", "18", "20", "30", "40", "54")
+testMLResult <- as.table(testMLResult)
+testMLResult
+
+```
+
+The network with 3 hidden layers, each containing 54 nodes, has a training accuracy of 97%. On the test set, this translates to 71% accuracy. 
+
+### Trying out the classifier
+
+Let's try out the classifier on two random images from the test set.
+
+```{r warning = FALSE}
+# Get an example image
+par(mfrow=c(1,1))
+plot(magick::image_read(as.cimg(as.numeric(signTest[750,-1]))))
+```
+
+The above is the hand gesture for `K` which should have a label of 10.
+
+``` {r}
+prediction <- predict(nnML54, signTest[750,-1])
+prediction
+```
+
+The classifier incorrectly labels this image as 24- which is `Y`:
+
+```{r warning = FALSE}
+library(dplyr)
+
+yImg <- sample_n(signTest[which(signTest$label == '24'),], 1)
+plot(magick::image_read(as.cimg(as.numeric(yImg[,-1]))))
+```
+
+Let's try another label:
+
+```{r warning = FALSE}
+plot(magick::image_read(as.cimg(as.numeric(signTest[700,-1]))))
+```
+
+The above image is the hand gesture for `C` which should have a label of 2 (since `A` starts at 0).
+
+```{r}
+prediction <- predict(nnML54, signTest[700,-1])
+prediction
+```
+
+The classifier correctly labeled the image in this case.
+
+This training took several hours. This also suggests that even a nearly perfect model on the training set may still overfit and not perform as well on the test data. This motivated me to look for another model which could increase test accuracy.
+
+### Training a Support Vector Machine
+```{r echo = FALSE}
+sampleSvmModel <- readRDS('./svmLinearSigns400')
+svmModel <- readRDS('./svmLinearSigns')
+```
+
+We saw in the previous examples that a neural network tends to increase in accuracy as the number of hidden layers and nodes increases in addition to the size of the training set. The process of training the network is extremely time-consuming. Another option to increase training performance could be to pre-process the images and extract only certain features unique to each sign/letter. In other words, it would be helpful to find a way to segment the images into classes for each sign using the image data. I will attempt to do so using a support vector machine.
+
+```{r eval = FALSE}
+# Train on prior 400 samples
+sampleSvmModel <- train(label ~ .,data = signTrainSample, trControl = trainControl("cv", number = 10),
+                        method = 'svmLinear', preProcess = c('center','scale'))
+
+```
+
+The training process took about 10 minutes. Here are the results:
+
+```{r warning = FALSE, message = FALSE}
+sampleSvmModel
+
+```
+
+In other words, the model has perfectly seperated the data- resulting in a training accuracy of 100%. Using this model on the test set gives the following results:
+
+```{r warning = FALSE, message = FALSE}
+svmPredict <- predict(sampleSvmModel, signTest[,-1])
+confusionMatrix(svmPredict, signTest$label)
+```
+
+The test accuracy is 79%. Still, this is an improvement on the neural network. Because the training accuracy is so high and the time spent training is relatively low, it might be worth it to train on all 27,455 training instances. Since the previous training process only took about 10 minutes, the following process should take half an hour:
+
+```{r eval = FALSE}
+# Train on entire training set
+svmModel <- train(label ~ ., data = signTrain, trControl = trainControl('cv', number = 10),
+                  method = 'svmLinear', preProcess = c('center','scale'))
+
+```
+
+```{r}
+svmModel
+```
+
+```{r warning = FALSE, message = FALSE}
+svmPredict <- predict(svmModel, signTest[,-1])
+cm <- confusionMatrix(svmPredict, signTest$label)
+cm$overall
+```
+
+The size of the training set did not improve the accuracy on the test set significantly. But we were able to achieve a model with 80% accuracy in a fraction of the time that it took to achieve a lower accuracy with a neural network!

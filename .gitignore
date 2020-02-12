@@ -1,0 +1,14 @@
+.DS_Store
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.data
+*.names
+*.log
+*.pdf
+*.gz
+*.tex
+*.zip
+*.rds
+.RHistory

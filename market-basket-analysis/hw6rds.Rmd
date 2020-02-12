@@ -1,0 +1,149 @@
+---
+title: "Homework 6 - Market Basket Analysis"
+author: Nathan Heskia
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Dataset and Objective
+
+The dataset consists of over 3 millions orders from [Instacart](https://www.kaggle.com/c/instacart-market-basket-analysis).
+
+```{r warning=FALSE, message=FALSE}
+library(rapportools)
+library(arules)
+
+# Load products file, which contains product id, department id and name
+products <- read.csv('products.csv', sep = ",", stringsAsFactors = FALSE)
+
+# Load orders, each row contains an order id and a product id. Since there
+# are multiple rows per order, use format = `single`
+instacartOrders <- read.transactions('order_products__prior.csv', format = 'single', header = TRUE, sep = ",", cols = c(1,2))
+
+# Map product ids/labels in orders to readable name
+itemLabels(instacartOrders) <- sapply(as.numeric(itemLabels(instacartOrders)), function(x) { products[which(products$product_id == x),]$product_name; })
+
+summary(instacartOrders)
+
+```
+
+Among the most frequent items are avocadoes, spinach, strawberries and bananas. The top 20 most frequent items are:
+
+```{r}
+itemFrequencyPlot(instacartOrders, topN = 25)
+```
+
+My objective is to use the Apriori algorithm to generate rules that help discover some actionable patterns.
+
+```{r warning = FALSE, results = "hide"}
+instacartRules <- apriori(instacartOrders, parameter = list(support = 0.006, confidence = 0.25, minlen = 2))
+```
+
+
+```{r}
+length(instacartRules@quality$count)
+
+inspect(sort(instacartRules, by = "lift"))
+```
+
+These rules seem like another way of looking at the item frequency plot. Bananas are found in many orders. Additionally, many other frequent items like apples and avocadoes are found in the same order. These rules aren't actionable because many people who order produce tend to order these items together.
+
+### Transforming the data
+
+If each item in the dataset also indicates which department it belongs to, then rules can be formulated such as: __"When an order contains a product from Department X, what is an item from Department Y that is also likely to be purchased?"__ This could be used to promote certain items at checkout or to build a recommendation system which suggests items frequently bought together.
+
+Here is the list of departments:
+
+```{r}
+departments <- read.csv('departments.csv', sep = ",", stringsAsFactors = FALSE)
+data.frame('Department'=departments$department)
+```
+
+In order to query for products and departments, product names can be transformed into `<product name> - <department name>`:
+
+```{r eval = FALSE}
+merged <- merge(x = instacartorders, y = products, by = "product_id", all.x = TRUE)
+merged <- merge(x = merged, y = departments, by = "department_id", all.x = TRUE)
+merged$product_name <- paste(merged$product_name, merged$department, sep = " - ")
+write.csv(merged,"order_product__prior_combined.csv", row.names = FALSE)
+```
+
+Loading the dataset:
+
+```{r echo = FALSE}
+instacartOrders <- readRDS('./ordersMaster.rds')
+```
+
+```{r eval = FALSE}
+instacartOrders <- read.transactions('order_product__prior_combined.csv', format = 'single', header = TRUE, sep = ",", cols = c(3,6))
+```
+
+```{r}
+inspect(instacartOrders[3])
+```
+
+The items are now composed of a product name and a department name. To generate some new rules, item labels for the products in various departments will be useful:
+
+```{r}
+alcoholLabels <- grep("alcohol$", itemLabels(instacartOrders), value = TRUE)
+beverageLabels <-  grep("beverages$", itemLabels(instacartOrders), value = TRUE)
+cannedGoodLabels <- grep("canned goods$", itemLabels(instacartOrders), value = TRUE)
+produceLabels <- grep("produce$", itemLabels(instacartOrders), value = TRUE)
+```
+
+Now that item labels for various deparments are available, a rule can be generated that specifically targets a department. For example, there was a lot of support in the dataset for items in the produce department, but suppose information about all other departments is desired. Which are the most frequent items purchased that are not produce?
+
+```{r warning = FALSE, results = "hide"}
+nonProduceRules <- apriori(instacartOrders, parameter = list(support = 0.001, target = 'frequent'), appearance = list(none = produceLabels))
+```
+
+```{r}
+inspect(sort(nonProduceRules, by = "support")[1:10])
+```
+
+Unsurprisingly, it's milk (and bread)! How about the most frequent in alcohol? Or canned goods?
+
+```{r warning = FALSE, results = "hide"}
+alcoholRules <- apriori(instacartOrders, parameter = list(support = 0.001, target = 'frequent'), appearance = list(items = alcoholLabels))
+```
+
+```{r}
+inspect(sort(alcoholRules, by = "support")[1:8])
+```
+
+```{r warning = FALSE, results = "hide"}
+cannedGoodRules <- apriori(instacartOrders, parameter = list(support = 0.001, target = 'frequent'), appearance = list(items = cannedGoodLabels))
+```
+
+```{r}
+inspect(sort(cannedGoodRules, by = "support")[1:10])
+```
+
+From the previous examples, we see that organic black beans, and black beans more generally, have hight support in the dataset. We can create rules having only canned goods on the left hand side and items from other departments on the right hand side in order to determine if there are any actionable patterns.
+
+```{r warning = FALSE, results = "hide"}
+# Canned goods on the left hand side, all other items except produce on the right hand side
+noCannedProduceLabels <- setdiff(setdiff(itemLabels(instacartOrders), cannedGoodLabels), produceLabels)
+cannedRules <- apriori(instacartOrders, parameter = list(support = 1e-5, confidence = 0.05, target = "rules", minlen=2), appearance = list(lhs=cannedGoodLabels, rhs=noCannedProduceLabels))
+```
+
+Suppose canned goods are being purchased at much higher frequency than usual. This includes the most frequent of canned goods like black beans. An actionable pattern could be to determine which items from other departments have the highest likelihood of being purchased together with black beans in order to monitor their stock in case supply chain disruptions are anticipated:
+
+```{r}
+blackBeanRules <- subset(cannedRules, lhs %in% grep("Black Beans", cannedGoodLabels, value = TRUE))
+blackBeanRulesDf <- DATAFRAME(sort(subset(blackBeanRules), by = 'confidence'))
+blackBeanRulesDf[1:10,c("RHS", "support", "confidence", "lift", "count")]
+```
+
+Customers who purchase black beans are also likely to purchase ground turkey, pasta sauce, tofu and eggs. The lift values for these items is also very large, indicating that the rule is strong and not just due to chance. If a large spike in canned good/black bean purchases occurs, it may be useful to monitor the stock levels of these items since there is a high degree of confidence in them appearing together. 
+
+Similarly, `blackBeanRules` can also be used to recommend beverages to customers with black beans in their cart. I can use __lift__ to determine those beverages where black beans is a strong predictor for being purchased:
+
+```{r}
+inspect(sort(subset(blackBeanRules, rhs %in% beverageLabels), by = 'lift')[1:10])
+```
+
+From these rules, an actionable pattern could be to recommend customers about different teas at checkout.

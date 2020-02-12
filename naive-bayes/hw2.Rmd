@@ -1,0 +1,155 @@
+---
+title: "Naive Bayes Implementation"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+### Objective
+
+My objective is to use the Naive Bayes algorithm with a dataset where each row contains a sentence and the author who wrote that sentence. I would like to answer the question, "Given sentence __x__, which author wrote it?"
+
+The [dataset](https://www.kaggle.com/c/spooky-author-identification) is from the Kaggle Spooky Author competition, which contains excerpts from stories by Edgar Allan Poe, Mary Shelley, and HP Lovecraft. My goal is also to determine how to best pre-process the data for best results with Naive Bayes.
+
+
+### Data exploration
+
+```{r}
+set.seed(1988)
+authors_raw <- read.csv("train.csv", stringsAsFactors = FALSE)
+authors_raw$author <- factor(authors_raw$author)  # Author is the category to predict
+table(authors_raw$author)
+```
+
+So there are excerpts from 3 different authors: Edgar Allan Poe (EAP), H.P Lovecraft (HPL) and Mary Shelley (MWS). Here is an example of an excerpt:
+
+```{r}
+authors_raw[1,c("text")]
+```
+
+## Cleaning the text
+
+```{r}
+library(tm)
+authors_corpus <- VCorpus(VectorSource(authors_raw$text))
+```
+
+The first step is to create a document term matrix, where each row represents a document, and each column represents the count of a word in that document. All documents in the corpus are converted to lower case. Numbers and punctuation symbols are removed. Finally, stop words (Words most common for a language) are removed from each document and all remaining words are converted to their base/root form.
+```{r}
+authors_dtm <- DocumentTermMatrix(
+  authors_corpus, control = list(
+    tolower = TRUE, removeNumbers = TRUE, stopwords = function(x) { removeWords(x, stopwords()) }, removePunctuation = TRUE, stemming = TRUE)
+)
+inspect(authors_dtm)
+```
+This shows, for example, that document number 10940 has thirteen occurences of the word "will". In order to reduce the sparsity of the matrix, we can reduce the number of columns to just those which represent words with a count of 25 or more across all documents:
+```{r}
+authors_freq_words <- findFreqTerms(authors_dtm, 25)
+length(authors_freq_words)
+```
+Before this, the document term matrix would have been __19,579__ x __14,972__. Taking into account only the most frequent words reduces the size of the matrix to __19,579__ x __2,089__. The next step is to partition the data and create training/testing sets where the columns are filtered by most frequent words.
+
+```{r}
+library(caret)
+train_index <- createDataPartition(authors_raw$author, times = 1, p = 0.75, list = FALSE)
+
+authors_train_data = authors_dtm[train_index, authors_freq_words]
+authors_test_data = authors_dtm[-train_index, authors_freq_words]
+
+authors_train_labels <- authors_raw[train_index, ]$author
+authors_test_labels <- authors_raw[-train_index, ]$author
+```
+
+Since the columns contains word frequency counts, their values can be turned into "Yes" if a count is greater than 0 and "No" if count is 0 in order to simplify the classification process.
+
+```{r}
+library(e1071)
+library(gmodels)
+
+convert_counts <- function(x) {
+  x <- ifelse(x > 0, "Yes", "No")
+}
+
+authors_train_data <- apply(authors_train_data, MARGIN = 2, convert_counts)
+authors_test_data <- apply(authors_test_data, MARGIN = 2, convert_counts)
+author_classifier <- naiveBayes(authors_train_data, authors_train_labels)
+author_predictions <- predict(author_classifier, authors_test_data, type="class")
+
+CrossTable(author_predictions, authors_test_labels, prop.chisq = FALSE, prop.t = FALSE, dnn = c('predicted', 'actual'))
+```
+The accuracy of this model is 
+$$
+\frac{1629 + 1022  + 1130}{4894} = 77.25\%
+$$
+
+### Improving performance
+
+
+#### Word frequency counts
+
+The first idea I have to improve performance is to increase the word frequency count threshold from 25 to 38, to see if that improves the classifier's accuracy. I do this because I question whether or not words with low frequency counts are creating more sparsity in the model.
+```{r}
+authors_freq_words <- findFreqTerms(authors_dtm, 38)
+length(authors_freq_words)
+```
+This reduces the dimensions of the document term matrix to 19579 x 1471. The next step is use the updated frequency columns on the training/test data.
+```{r}
+authors_train_data <- apply(authors_dtm[train_index, authors_freq_words], MARGIN = 2, convert_counts)
+authors_test_data <- apply(authors_dtm[-train_index, authors_freq_words], MARGIN = 2, convert_counts)
+
+author_classifier <- naiveBayes(authors_train_data, authors_train_labels)
+author_predictions <- predict(author_classifier, authors_test_data, type="class")
+CrossTable(author_predictions, authors_test_labels, prop.chisq = FALSE, prop.t = FALSE, dnn = c('predicted', 'actual'))
+```
+The accuracy of this model is 
+$$
+\frac{1607 + 993 + 1092}{4894} = 75.43\%
+$$
+Decreasing the number of columns in the document term matrix lowered the prediction accuracy. I am also curious about the effect of stop words and the effect of the laplace constant. The tm package has the option of using stop words from the SMART information retrieval system, which I think could help in filtering out more common words. Additionally, I set a small value for the laplace constant:
+```{r}
+authors_dtm_custom <- DocumentTermMatrix(
+  authors_corpus, control = list(
+    tolower = TRUE, removeNumbers = TRUE, stopwords = function(x) { removeWords(x, stopwords("SMART")) }, removePunctuation = TRUE, stemming = TRUE)
+)
+
+authors_freq_words_custom <- findFreqTerms(authors_dtm_custom, 38)
+
+authors_train_data <- apply(authors_dtm_custom[train_index, authors_freq_words_custom], MARGIN = 2, convert_counts)
+authors_test_data <- apply(authors_dtm_custom[-train_index, authors_freq_words_custom], MARGIN = 2, convert_counts)
+
+author_classifier <- naiveBayes(authors_train_data, authors_train_labels, laplace=0.01)
+author_predictions <- predict(author_classifier, authors_test_data, type="class")
+CrossTable(author_predictions, authors_test_labels, prop.chisq = FALSE, prop.t = FALSE, dnn = c('predicted', 'actual'))
+```
+The accuracy of this model is 
+$$
+\frac{1588 + 929 + 1048}{4894} = 72.84\%
+$$
+This is not an improvement on the first classifier. What are the dimensions of this matrix?
+```{r}
+dim(authors_train_data)
+```
+
+It seems like reducing the number of columns in the document term matrix has an effect on accuracy. The next step is to try decreasing the word frequency count threshold which increases the number of columns in the matrix:
+
+```{r}
+authors_freq_words <- findFreqTerms(authors_dtm, 15)
+length(authors_freq_words)
+```
+This increases the dimensions of the matrix to 19579 X 3047.
+```{r}
+authors_train_data <- apply(authors_dtm[train_index, authors_freq_words], MARGIN = 2, convert_counts)
+authors_test_data <- apply(authors_dtm[-train_index, authors_freq_words], MARGIN = 2, convert_counts)
+
+author_classifier <- naiveBayes(authors_train_data, authors_train_labels, laplace=0.01)
+author_predictions <- predict(author_classifier, authors_test_data, type="class")
+CrossTable(author_predictions, authors_test_labels, prop.chisq = FALSE, prop.t = FALSE, dnn = c('predicted', 'actual'))
+```
+
+The accuracy of this model is 
+
+$$
+\frac{1675 + 1083 + 1162}{4894} = 80.09\%
+$$
+This is an improvement on both the original classifier as well as the models which reduce the number of columns in the document term matrix. From this exercise, I've learned that reducing the number columns in the matrix according to frequency counts may not be the best way to train Naive Bayes. There could be words which occur with less frequency that increase the probability of correct classification from one author to another.
+
