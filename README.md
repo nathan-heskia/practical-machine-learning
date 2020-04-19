@@ -12,3 +12,5 @@ This repository contains assignments I completed for a machine learning course a
 | Random Forests | Phishing Website | [Kaggle](https://www.kaggle.com/akashkr/phishing-website-dataset) |
 
 Some models in the Neural Networks assignment require several hours to train.
+
+[Click here](https://nathan-heskia.github.io/practical-machine-learning/) to view this repository as a website.
