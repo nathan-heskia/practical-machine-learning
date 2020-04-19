@@ -1,9 +1,6 @@
 ---
 title: "Homework 3 - Classification Trees Or Rules"
-output:
-  html_document: default
-  word_document: default
-  pdf_document: default
+output: html_notebook
 ---
 
 ```{r setup, include=FALSE}
